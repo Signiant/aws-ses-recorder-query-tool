@@ -1,0 +1,185 @@
+<?php
+function bounceSearch($dynamoClient,$tableName,$queryArgs,$startDate,$endDate)
+{
+	$resultSet = array();
+	$resultSet['error'] = "";
+	$continue = false;
+	$result = "";
+
+	// Convert our start and end dates into epoch time
+	// note all the times in the DB are UTC
+	$startDT = new DateTime($startDate . '00:00:00',new DateTimeZone('UTC'));
+	$startEpoch = $startDT->format('U');
+
+	$endDT = new DateTime($endDate . '23:59:59',new DateTimeZone('UTC'));
+	$endEpoch = $endDT->format('U');
+
+	$doScan = false; // we need to do a scan if a wildcard is specified
+
+	error_log("Looking in DynamoDB for email address: " . $queryArgs);
+
+	if ($queryArgs === '*') // looking for ALL entries
+	{
+		$doScan = true;
+		$queryArgs = '.';
+	}
+
+	if (strpos($queryArgs,'*') !== false)
+	{
+		// remove the wildcards and set flag to do a scan rather than query
+		$doScan = true;
+		$queryArgs = preg_replace('/\*/','',$queryArgs);
+	}
+
+	if ($doScan)
+	{
+		error_log("Performing dynamoDB SCAN");
+		try
+		{
+			$results = $dynamoClient->getPaginator('Scan',array(
+				'TableName' => $tableName,
+				'ScanFilter' => array(
+					'recipientAddress' => array(
+						'ComparisonOperator' => 'CONTAINS',
+						'AttributeValueList' => array(
+							array('S' => $queryArgs)
+						)
+					),
+					'sesTimestamp' => array(
+						'ComparisonOperator' => 'BETWEEN',
+						'AttributeValueList' => array(
+							array('N' => $startEpoch),
+							array('N' => $endEpoch)
+						)
+					)
+				)
+			));
+		} catch (DynamoDbException $e)
+		{
+			$messageString = $e->getExceptionCode() . ":" . $e->getMessage();
+			error_log("Error scanning dynamoDB for bounce: " . $messageString);
+		}
+	} else
+	{
+		error_log("Performing dynamoDB QUERY");
+		try
+		{
+			$results = $dynamoClient->getPaginator('Query',array(
+				'TableName' => $tableName,
+				'KeyConditions' => array(
+					'recipientAddress' => array(
+						'ComparisonOperator' => 'EQ',
+						'AttributeValueList' => array(
+							array('S' => $queryArgs)
+						)
+					)
+				),
+				'QueryFilter' => array(
+					'sesTimestamp' => array(
+					'ComparisonOperator' => 'BETWEEN',
+					'AttributeValueList' => array(
+						array('N' => $startEpoch),
+						array('N' => $endEpoch)
+						)
+					)
+				)
+			));
+		} catch (DynamoDbException $e)
+		{
+			$messageString = $e->getExceptionCode() . ":" . $e->getMessage();
+			error_log("Error querying dynamoDB for bounce: " . $messageString);
+		}
+	} // doScan
+
+	if (isset($results))
+	{
+		$index = 0;
+		foreach ($results as $result)
+		{
+      foreach ($result['Items'] as $item)
+      {
+        $resultSet[$index]['recipient'] = $item['recipientAddress']['S'];
+        $resultSet[$index]['bouncesubtype'] = $item['bounceSubType']['S'];
+        $resultSet[$index]['bouncetype'] = $item['bounceType']['S'];
+        $resultSet[$index]['diagnosticcode'] = $item['diagnosticCode']['S'];
+        $resultSet[$index]['reportingmta'] = $item['reportingMTA']['S'];
+        $resultSet[$index]['sender'] = $item['sender']['S'];
+        $resultSet[$index]['timestamp'] = $item['sesTimestamp']['N'];
+        $resultSet[$index]['bouncetimestamp'] = $item['bounceTimestamp']['N'];
+        $index++;
+      }
+		}
+	}
+	return $resultSet;
+}
+
+function outputResults($results,$panelTitle)
+{
+	// The results are in a 2D indexed array
+
+	print "<div class='panel panel-primary'>\n";
+	print "<div class='panel-heading'>\n";
+	print "<h3 class='panel-title'>" . $panelTitle . "</h3>\n";
+	print "</div>\n";
+	print "<div class='panel-body'>\n";
+
+	print "<table class='table table-condensed'>\n";
+	print "<tr>\n";
+		print "<th width='1%'>#</th>\n";
+		print "<th width='7%'>Original Message Sent</th>\n";
+		print "<th width='7%'>Bounce Sent by ISP</th>\n";
+		print "<th width='20%'>Recipient</th>\n";
+		print "<th width='21%'>Sender</th>\n";
+		print "<th width='6%'>MTA</th>\n";
+		print "<th width='45%'>Reason</th>\n";
+	print "</tr>\n";
+
+	$resultNumber = 1;
+	unset($results['error']);
+
+	usort($results,'timestamp_sort');
+
+	foreach ($results as $result)
+	{
+		// If we have an MTA, clean up the field slightly
+		if ($result['reportingmta'] != "UNKNOWN")
+		{
+			$MTA = substr($result['reportingmta'],(strpos($result['reportingmta'],";")+1));
+		} else
+		{
+			$MTA = "Unknown";
+		}
+
+    // We may not have a timestamp
+    if ($result['bouncetimestamp'])
+    {
+      $displayTimestamp = date('r',$result['bouncetimestamp']);
+    } else
+    {
+      $displayTimestamp = "N/A";
+    }
+
+		// Clean up the bounce reason a little
+		if ($result['bouncesubtype'] === "Suppressed")
+		{
+			$bounceReason = "Recipient is on suppression list";
+		} else
+		{
+			$bounceReason = $result['diagnosticcode'];
+		}
+
+		print "<tr>\n";
+			print "<td>" . $resultNumber . "</td>\n";
+			print "<td class='wrapvals'><small>" . date('r',$result['timestamp']) . "</small></td>\n";
+			print "<td class='wrapvals'><small>" . $displayTimestamp . "</small></td>\n";
+			print "<td class='wrapvals'><small>" . $result['recipient'] . "</small></td>\n";
+			print "<td class='wrapvals'><small>" . $result['sender'] . "</small></td>\n";
+			print "<td class='wrapvals'><small>" . $MTA . "</small></td>\n";
+			print "<td class='wrapvals'><small>" . $bounceReason . "</small></td>\n";
+		print "</tr>\n";
+		$resultNumber++;
+	}
+	print "</table>\n";
+	print "</div>\n";
+}
+?>

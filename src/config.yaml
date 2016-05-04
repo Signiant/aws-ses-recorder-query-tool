@@ -1,0 +1,4 @@
+dynamodb:
+   bouncetable: "DEVOPS_SES_BOUNCES"
+   deliverytable: "DEVOPS_SES_DELIVERIES"
+   region: "us-east-1"
