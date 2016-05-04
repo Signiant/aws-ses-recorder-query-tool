@@ -2,7 +2,6 @@
 function bounceSearch($dynamoClient,$tableName,$queryArgs,$startDate,$endDate)
 {
 	$resultSet = array();
-	$resultSet['error'] = "";
 	$continue = false;
 	$result = "";
 

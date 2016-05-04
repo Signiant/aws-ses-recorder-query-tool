@@ -125,12 +125,11 @@ if ( (isset($_POST["search-email"])) )
 
 				$resultDataSet = bounceSearch($dynamoClient,$bounceTable,$recipientAddressToQuery,$startDate,$endDate);
 
-				if ( empty($resultDataSet['error']) )
+				if (!empty($resultDataSet))
 				{
 					outputResults($resultDataSet,$panelTitle);
-				} else
-				{
-					$infoText = $resultDataSet['error'];
+				} else {
+					$infoText = "No Data Found";
 				}
 			} else
 			{
